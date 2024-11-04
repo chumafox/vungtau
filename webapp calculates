@@ -1,0 +1,64 @@
+function doPost(e) {
+  try {
+    Logger.log('Incoming request data: ' + JSON.stringify(e));
+    let data = JSON.parse(e.postData ? e.postData.contents : '{}');
+
+    // Преобразование запрашиваемой цены и остатка по ипотеке в числа
+    let askingPrice = parseFloat(data['Asking Price']) || 0;
+    let openBalance = parseFloat(data['Open Balance']) || 0;
+
+    // Расчеты
+    let purchasePrice = askingPrice * 0.91;
+    let agentFee = purchasePrice * 0.025;
+    let cashToSeller = purchasePrice * 0.015;
+    let netCash = purchasePrice - openBalance;
+
+    // Логика распределения
+    let sellerCarryBackNote = 0;
+    if (netCash < agentFee) {
+      Logger.log('Net Cash is less than Agent Fee, giving all Net Cash to the agent.');
+      agentFee = netCash;
+      cashToSeller = 0;
+    } else {
+      netCash -= (agentFee + cashToSeller);
+      if (netCash < 0) {
+        cashToSeller += netCash;
+        cashToSeller = Math.max(0, cashToSeller);
+      } else {
+        sellerCarryBackNote = netCash;
+      }
+    }
+
+    // Обновление данных
+    data['Purchase Price'] = purchasePrice;
+    data['Agent Fee'] = agentFee;
+    data['Cash To Seller'] = cashToSeller;
+    data['Net Cash'] = agentFee + cashToSeller;
+    data['Carry Back Note'] = sellerCarryBackNote;
+
+    Logger.log('Final data with updated Net Cash: ' + JSON.stringify(data));
+
+    // Отправка данных на вебхук Make.com
+    sendToMakeWebhook(data);
+
+    return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+  } catch (error) {
+    Logger.log('Error: ' + error.message);
+    return ContentService.createTextOutput(JSON.stringify({ error: error.message })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function sendToMakeWebhook(data) {
+  const makeWebhookUrl = "https://hook.us1.make.com/dskfet1lot1jvwrh8r1nkis4poq0clof";
+  const options = {
+    'method': 'post',
+    'contentType': 'application/json',
+    'payload': JSON.stringify(data)
+  };
+  try {
+    let response = UrlFetchApp.fetch(makeWebhookUrl, options);
+    Logger.log('Make.com response: ' + response.getContentText());
+  } catch (error) {
+    Logger.log('Error sending data to Make.com: ' + error.message);
+  }
+}
