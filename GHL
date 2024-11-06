@@ -1,0 +1,55 @@
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const rapidApiKey = '4c95c6968amsh37ebb14f6f0a9a4p1f0322jsnca02fb1d0865';
+    const rapidApiHost = 'zillow-com1.p.rapidapi.com';
+    const webhookUrl = 'https://services.leadconnectorhq.com/hooks/nmBPcXp3SZPA9ArMaXcB/webhook-trigger/4fc77e5d-f617-45f2-96fd-90256f0de5a6';
+
+    if (!data.full_address) {
+      return ContentService.createTextOutput('No address provided.').setMimeType(ContentService.MimeType.TEXT);
+    }
+
+    const address = encodeURIComponent(data.full_address);
+    const url = `https://zillow-com1.p.rapidapi.com/property?address=${address}`;
+    const options = {
+      method: 'GET',
+      headers: {
+        'x-rapidapi-key': rapidApiKey,
+        'x-rapidapi-host': rapidApiHost
+      }
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const result = JSON.parse(response.getContentText());
+
+    const email = result?.displayUser?.email || '';
+    let phone = result?.displayUser?.phoneNumbers?.cell || '';
+    const price = result?.price || ''; // Извлекаем цену
+    const timeOnZillow = result?.timeOnZillow || ''; // Извлекаем время на Zillow
+
+    if (phone) {
+      phone = phone.replace(/[^0-9]/g, ''); // удаляем все символы, кроме цифр
+      phone = phone.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3'); // форматируем как XXX-XXX-XXXX
+    }
+
+    // Отправляем данные на вебхук
+    const payload = {
+      contact_id: data.contact_id,
+      full_address: data.full_address,
+      email: email,
+      phone: phone,
+      price: price,
+      time_on_zillow: timeOnZillow
+    };
+    UrlFetchApp.fetch(webhookUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload)
+    });
+
+    return ContentService.createTextOutput('Data processed successfully.').setMimeType(ContentService.MimeType.TEXT);
+  } catch (error) {
+    Logger.log(`Ошибка: ${error}`);
+    return ContentService.createTextOutput('Error processing data.').setMimeType(ContentService.MimeType.TEXT);
+  }
+}
