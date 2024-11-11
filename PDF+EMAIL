@@ -1,0 +1,199 @@
+// Основная функция для расчета MAO
+function calculateMAO(inputData) {
+    // Удаляем запятые и приводим к числовому значению
+    const price = parseFloat(inputData.Price.replace(/,/g, ''));
+
+    // Проверяем, что значение Price корректное
+    if (isNaN(price) || price <= 0) {
+        return { result: ["0"] }; // Возвращаем "0" в виде массива
+    }
+
+    // Рассчитываем MAO в зависимости от значения price
+    let mao = 0;
+    if (price <= 300000) {
+        mao = price * 0.70;
+    } else if (price > 300000 && price <= 500000) {
+        mao = price * 0.75;
+    } else if (price > 500000) {
+        mao = price * 0.80;
+    }
+
+    // Округляем до целого и форматируем с запятыми
+    const formattedMAO = Math.round(mao).toLocaleString("en-US");
+
+    // Возвращаем результат как массив
+    return { result: [formattedMAO] };
+}
+
+// Функция для заполнения контракта
+function fillMaoContractTemplate(templateId, data) {
+    try {
+        // Создаем копию шаблона как Google Doc
+        const templateFile = DriveApp.getFileById(templateId);
+        const contractCopy = templateFile.makeCopy("MAO Contract - " + (data['full_address'] || 'Unknown Address'), DriveApp.getFolderById("1V4L62cUVIZe4nhBxnouNL6_UrV1T9N1n"));
+        const contractDoc = DocumentApp.openById(contractCopy.getId());
+        const body = contractDoc.getBody();
+
+        // Заполнение шаблона данными
+        replacePlaceholder(body, "{{SellerName}}", data['Owners Name']);
+        replacePlaceholder(body, "{{Address}}", data['full_address']);
+        replacePlaceholder(body, "{{MAO}}", data['MAO']);
+
+        // Сохранение изменений
+        contractDoc.saveAndClose();
+
+        log("MAO Contract created and filled successfully.");
+        
+        // Конвертация в PDF
+        const pdfFileId = convertContractToPDF(contractCopy);
+        
+        return pdfFileId;
+    } catch (error) {
+        log('Error filling MAO contract: ' + error.message);
+        throw new Error('Error creating or filling MAO contract copy');
+    }
+}
+
+// Функция для конвертации контракта в PDF
+function convertContractToPDF(contractCopy) {
+    try {
+        const pdfContent = DriveApp.getFileById(contractCopy.getId()).getAs('application/pdf');
+        const pdfFileName = contractCopy.getName().replace(".docx", "") + ".pdf";
+        const pdfFolder = DriveApp.getFolderById("1V4L62cUVIZe4nhBxnouNL6_UrV1T9N1n");
+        
+        const pdfFile = pdfFolder.createFile(pdfContent);
+        pdfFile.setName(pdfFileName);
+
+        log("PDF created and saved successfully: " + pdfFileName);
+
+        return pdfFile.getId();
+    } catch (error) {
+        log('Error converting contract to PDF: ' + error.message);
+        throw new Error('Error converting contract to PDF');
+    }
+}
+
+// Функция для отправки ссылки на PDF в GHL
+function sendPDFLinkToGHL(pdfFileId, data) {
+    try {
+        // Получение ссылки на PDF-файл
+        const pdfFile = DriveApp.getFileById(pdfFileId);
+        const pdfUrl = pdfFile.getUrl();
+        
+        // Добавление ссылки на PDF в данные
+        data['Zillow Link'] = pdfUrl;
+        
+        // Данные для отправки в GHL по вебхуку
+        const ghlWebhookUrl = "https://services.leadconnectorhq.com/hooks/nmBPcXp3SZPA9ArMaXcB/webhook-trigger/58235ecf-5acc-42a5-8774-70a53f191524";
+        const payload = {
+            pdfLink: pdfUrl,
+            contact_id: data['contact_id'],
+            full_address: data['full_address'],
+            Owners_Name: data['Owners Name'],
+            MAO: data['MAO']
+        };
+        
+        const options = {
+            'method': 'post',
+            'contentType': 'application/json',
+            'payload': JSON.stringify(payload)
+        };
+
+        // Отправка данных на вебхук GHL
+        const response = UrlFetchApp.fetch(ghlWebhookUrl, options);
+        log('Response from GHL: ' + response.getContentText());
+
+        // Отправка PDF на email
+        sendPDFByEmail(pdfFile, data['email']);
+
+    } catch (error) {
+        log('Error sending PDF link to GHL: ' + error.message);
+        throw new Error('Error sending PDF link to GHL');
+    }
+}
+
+// Функция для отправки PDF по электронной почте
+function sendPDFByEmail(pdfFile, recipientEmail) {
+    try {
+        if (!recipientEmail) {
+            throw new Error('Recipient email is missing');
+        }
+
+        const subject = "Your MAO Contract";
+        const body = "Please find attached the MAO contract.";
+        const attachment = pdfFile.getAs(MimeType.PDF);
+
+        MailApp.sendEmail({
+            to: recipientEmail,
+            subject: subject,
+            body: body,
+            attachments: [attachment]
+        });
+
+        log(`PDF sent to email: ${recipientEmail}`);
+    } catch (error) {
+        log('Error sending PDF by email: ' + error.message);
+        throw new Error('Error sending PDF by email');
+    }
+}
+
+// Функция для замены плейсхолдера
+function replacePlaceholder(body, placeholder, value) {
+    try {
+        const replacement = (value !== undefined && value !== null) ? value.toString() : '0'; // Замена на 0 при пустом значении
+        body.replaceText(placeholder, replacement);
+    } catch (error) {
+        log(`Error replacing placeholder ${placeholder}: ${error.message}`);
+    }
+}
+
+// Функция логирования
+function log(message) {
+    Logger.log(message);
+    logMessages.push(message);
+}
+
+// Основная функция для запуска процесса
+function doPost(e) {
+    try {
+        log('Incoming request data: ' + JSON.stringify(e));
+        let data = JSON.parse(e.postData ? e.postData.contents : '{}');
+
+        // Рассчитываем MAO
+        const maoResult = calculateMAO({ Price: data['Asking Price'] });
+        data['MAO'] = maoResult.result[0];
+
+        log('Final data with MAO: ' + JSON.stringify(data));
+
+        // Заполнение шаблона контракта MAO
+        const templateId = '1tu3WSYOahytOV-drG77m4OQOkvJJOjx-Cy_wl74FtUE';
+        const pdfFileId = fillMaoContractTemplate(templateId, data);
+
+        // Отправка ссылки на PDF в GHL и отправка PDF по email
+        sendPDFLinkToGHL(pdfFileId, data);
+
+        // Отправка логов на email
+        sendLogsByEmail();
+
+        return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+    } catch (error) {
+        log('Error: ' + error.message);
+        sendLogsByEmail();
+        return ContentService.createTextOutput(JSON.stringify({ error: error.message })).setMimeType(ContentService.MimeType.JSON);
+    }
+}
+
+// Функция для отправки логов по электронной почте
+function sendLogsByEmail() {
+    try {
+        const logs = logMessages.join('\n');
+        const recipient = "westin.sanya.jenya@gmail.com";
+        const subject = "Logs from Google Apps Script";
+        const body = logs;
+        
+        MailApp.sendEmail(recipient, subject, body);
+        log("Logs sent to email: " + recipient);
+    } catch (error) {
+        log('Error sending logs by email: ' + error.message);
+    }
+}
